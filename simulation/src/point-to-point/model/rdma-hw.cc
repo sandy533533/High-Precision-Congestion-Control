@@ -19,11 +19,11 @@ TypeId RdmaHw::GetTypeId (void)
 {
 	static TypeId tid = TypeId ("ns3::RdmaHw")
 		.SetParent<Object> ()
-		.AddAttribute("MinRate",
-				"Minimum rate of a throttled flow",
-				DataRateValue(DataRate("100Mb/s")),
-				MakeDataRateAccessor(&RdmaHw::m_minRate),
-				MakeDataRateChecker())
+		.AddAttribute("MinRate",                                // name 
+				"Minimum rate of a throttled flow",             // help 
+				DataRateValue(DataRate("100Mb/s")),             // init value
+				MakeDataRateAccessor(&RdmaHw::m_minRate),        // 连接的指针 ，参数赋予&RdmaHw::m_minRate
+				MakeDataRateChecker())                           // check
 		.AddAttribute("Mtu",
 				"Mtu.",
 				UintegerValue(1000),
@@ -181,15 +181,21 @@ TypeId RdmaHw::GetTypeId (void)
 RdmaHw::RdmaHw(){
 }
 
+// 连接 ，获得外面输入的~~~
 void RdmaHw::SetNode(Ptr<Node> node){
 	m_node = node;
 }
+
+// 这是定义RdmaHw::Setup(QpCompleteCallback cb)这个功能，后面有调用
+//是nic给dev 还是
 void RdmaHw::Setup(QpCompleteCallback cb){
 	for (uint32_t i = 0; i < m_nic.size(); i++){
 		Ptr<QbbNetDevice> dev = m_nic[i].dev;
 		if (dev == NULL)
 			continue;
 		// share data with NIC
+		//	Ptr<RdmaEgressQueue> m_rdmaEQ;   rdma输出队列
+
 		dev->m_rdmaEQ->m_qpGrp = m_nic[i].qpGrp;
 		// setup callback
 		dev->m_rdmaReceiveCb = MakeCallback(&RdmaHw::Receive, this);
@@ -203,6 +209,7 @@ void RdmaHw::Setup(QpCompleteCallback cb){
 }
 
 uint32_t RdmaHw::GetNicIdxOfQp(Ptr<RdmaQueuePair> qp){
+		// m_rtTable; // map from ip address (u32) to possible ECMP port (index of dev)
 	auto &v = m_rtTable[qp->dip.Get()];
 	if (v.size() > 0){
 		return v[qp->GetHash() % v.size()];
@@ -210,6 +217,7 @@ uint32_t RdmaHw::GetNicIdxOfQp(Ptr<RdmaQueuePair> qp){
 		NS_ASSERT_MSG(false, "We assume at least one NIC is alive");
 	}
 }
+// 用 dip sport 和pg 找QP ？
 uint64_t RdmaHw::GetQpKey(uint32_t dip, uint16_t sport, uint16_t pg){
 	return ((uint64_t)dip << 32) | ((uint64_t)sport << 16) | (uint64_t)pg;
 }
@@ -220,6 +228,10 @@ Ptr<RdmaQueuePair> RdmaHw::GetQp(uint32_t dip, uint16_t sport, uint16_t pg){
 		return it->second;
 	return NULL;
 }
+//**********************************************************************************
+//发送方向： AddQueuePair ：用相关信息找到对应的NIC，并将qp放入NIC的qp group和dev(带着rate)，并将这个信息添加入总的qpmap中
+//**********************************************************************************
+
 void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport, uint32_t win, uint64_t baseRtt, Callback<void> notifyAppFinish){
 	// create qp
 	Ptr<RdmaQueuePair> qp = CreateObject<RdmaQueuePair>(pg, sip, dip, sport, dport);
@@ -230,24 +242,30 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 	qp->SetAppNotifyCallback(notifyAppFinish);
 
 	// add qp
+    // 用qp里面的dip去查rtTable表，获得possible ECMP port，找到nic_idx
 	uint32_t nic_idx = GetNicIdxOfQp(qp);
+	//将这个qp 放入对应的nic的qp group
 	m_nic[nic_idx].qpGrp->AddQp(qp);
+	}
+// 用 dip sport 和pg 组成key，写入m_qpMap (总的？)
 	uint64_t key = GetQpKey(dip.Get(), sport, pg);
 	m_qpMap[key] = qp;
 
-	// set init variables
+
+	// set init variables  设置初始化速率，NIC的速率，最大的管道速率
+	// 将NIC的info给qp
 	DataRate m_bps = m_nic[nic_idx].dev->GetDataRate();
 	qp->m_rate = m_bps;
 	qp->m_max_rate = m_bps;
-	if (m_cc_mode == 1){
+	if (m_cc_mode == 1){    //DCQCN
 		qp->mlx.m_targetRate = m_bps;
-	}else if (m_cc_mode == 3){
+	}else if (m_cc_mode == 3){              //HPCC
 		qp->hp.m_curRate = m_bps;
-		if (m_multipleRate){
+		if (m_multipleRate){                //"Maintain multiple rates in HPCC", third.cc代入的参数
 			for (uint32_t i = 0; i < IntHeader::maxHop; i++)
 				qp->hp.hopState[i].Rc = m_bps;
 		}
-	}else if (m_cc_mode == 7){
+	}else if (m_cc_mode == 7){            //Timely
 		qp->tmly.m_curRate = m_bps;
 	}else if (m_cc_mode == 10){
 		qp->hpccPint.m_curRate = m_bps;
@@ -255,7 +273,13 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 
 	// Notify Nic
 	m_nic[nic_idx].dev->NewQp(qp);
+	// NIC 有两部分 ： dev 和qpGrp 将新qp加入到dev，上面有加入qpgrp的
 }
+
+//**********************************************************************************
+// DeleteQueuePair ：用相关信息找个对应的key，将qpmap的key释放
+// 收到ack 后？
+//**********************************************************************************
 
 void RdmaHw::DeleteQueuePair(Ptr<RdmaQueuePair> qp){
 	// remove qp from the m_qpMap
@@ -263,6 +287,11 @@ void RdmaHw::DeleteQueuePair(Ptr<RdmaQueuePair> qp){
 	m_qpMap.erase(key);
 }
 
+// 以上都是发送端的操作
+//以下是接收端的操作
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 获得接受的pq的信息
 Ptr<RdmaRxQueuePair> RdmaHw::GetRxQp(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport, uint16_t pg, bool create){
 	uint64_t key = ((uint64_t)dip << 32) | ((uint64_t)pg << 16) | (uint64_t)dport;
 	auto it = m_rxQpMap.find(key);
@@ -303,14 +332,15 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 
 	// TODO find corresponding rx queue pair
 	Ptr<RdmaRxQueuePair> rxQp = GetRxQp(ch.dip, ch.sip, ch.udp.dport, ch.udp.sport, ch.udp.pg, true);
+// ecn!= 0 ,有ecn标记
 	if (ecnbits != 0){
-		rxQp->m_ecn_source.ecnbits |= ecnbits;
+		rxQp->m_ecn_source.ecnbits |= ecnbits;   // 和原来的标记 or一下
 		rxQp->m_ecn_source.qfb++;
 	}
 	rxQp->m_ecn_source.total++;
-	rxQp->m_milestone_rx = m_ack_interval;
+	rxQp->m_milestone_rx = m_ack_interval;    //ack 间隔 ，一次n个ack ？ third.cc 配进来的参数
 
-	int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);
+	int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);   // 获得udp的序列号
 	if (x == 1 || x == 2){ //generate ACK or NACK
 		qbbHeader seqh;
 		seqh.SetSeq(rxQp->ReceiverNextExpectedSeq);
@@ -451,10 +481,10 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch){
 }
 
 int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size){
-	uint32_t expected = q->ReceiverNextExpectedSeq;
+	uint32_t expected = q->ReceiverNextExpectedSeq;   // 根据上一个接收到的q推算的预期的下一个seq
 	if (seq == expected){
-		q->ReceiverNextExpectedSeq = expected + size;
-		if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx){
+		q->ReceiverNextExpectedSeq = expected + size;    // 如果相同，更新预期nextseq
+		if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx){    // 如果预期的nextseq大于
 			q->m_milestone_rx += m_ack_interval;
 			return 1; //Generate ACK
 		}else if (q->ReceiverNextExpectedSeq % m_chunk == 0){

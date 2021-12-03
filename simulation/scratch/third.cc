@@ -90,7 +90,7 @@ unordered_map<uint64_t, double> rate2pmax;
  ***********************************************/
 std::ifstream topof, flowf, tracef;
 
-NodeContainer n;
+NodeContainer n;   //创建一个空的NodeContainer，名字叫n
 
 uint64_t nic_rate;
 
@@ -356,8 +356,12 @@ int main(int argc, char *argv[])
 			conf >> key;
 
 			//std::cout << conf.cur << "\n";
-
-			if (key.compare("ENABLE_QCN") == 0)
+//**************************************************************************			
+//--------------------从mix/config.txt中读取参数   
+//----sudo ./waf --run 'scratch/third mix/config.txt'  
+//----run时将config文件当参数传进来
+//**************************************************************************
+			if (key.compare("ENABLE_QCN") == 0)//compare()若参与比较的两个串值相同，则函数返回 0
 			{
 				uint32_t v;
 				conf >> v;
@@ -665,6 +669,11 @@ int main(int argc, char *argv[])
 
 	bool dynamicth = use_dynamic_pfc_threshold;
 
+//**************************************************************************
+//----一些参数给NetDevice
+//**************************************************************************
+//NetDevice类提供了管理连接其他节点和信道对象的各种方法，并且允许开发者以面向对象的方法来自定义
+
 	Config::SetDefault("ns3::QbbNetDevice::PauseTime", UintegerValue(pause_time));
 	Config::SetDefault("ns3::QbbNetDevice::QcnEnabled", BooleanValue(enable_qcn));
 	Config::SetDefault("ns3::QbbNetDevice::DynamicThreshold", BooleanValue(dynamicth));
@@ -689,7 +698,11 @@ int main(int argc, char *argv[])
 	}
 
 	//SeedManager::SetSeed(time(NULL));
-
+//**************************************************************************
+//----从mix/topology.txt中获得拓扑结构,flow.txt获得flow num ：
+//----node_num ：348 ;switch_num:28 ;link_num :800
+//----flow_num ：2 trace_num:348
+//**************************************************************************
 	topof.open(topology_file.c_str());
 	flowf.open(flow_file.c_str());
 	tracef.open(trace_file.c_str());
@@ -707,29 +720,35 @@ int main(int argc, char *argv[])
 		topof >> sid;
 		node_type[sid] = 1;
 	}
+	//node_type[0] = 1;   //0 是switch node 
 	for (uint32_t i = 0; i < node_num; i++){
 		if (node_type[i] == 0)
-			n.Add(CreateObject<Node>());
+		   //将CreateObject<Node>()节点添加到n的NodeContainer
+			n.Add(CreateObject<Node>());    //NodeContainer n
 		else{
 			Ptr<SwitchNode> sw = CreateObject<SwitchNode>();
 			n.Add(sw);
-			sw->SetAttribute("EcnEnabled", BooleanValue(enable_qcn));
+			sw->SetAttribute("EcnEnabled", BooleanValue(enable_qcn));   // 只有switch node才有ecn功能？
 		}
 	}
 
 
 	NS_LOG_INFO("Create nodes.");
 
-	InternetStackHelper internet;
+// topology helper  连接的是dievice和channel
+	InternetStackHelper internet;  //which uses a mix of static routing and global routing by default.
 	internet.Install(n);
 
+//创建internet网络的拓扑helper ：internet；对node容器n安装helper
+//同时确认协议族是internet ？
 	//
 	// Assign IP to each server
 	//
 	for (uint32_t i = 0; i < node_num; i++){
 		if (n.Get(i)->GetNodeType() == 0){ // is server
 			serverAddress.resize(i + 1);
-			serverAddress[i] = node_id_to_ip(i);
+			serverAddress[i] = node_id_to_ip(i);   
+			//Ipv4Address(0x0b000001 + ((id / 256) * 0x00010000) + ((id % 256) * 0x00000100)); 通过id转换为IpV4
 		}
 	}
 
@@ -739,10 +758,14 @@ int main(int argc, char *argv[])
 	// Explicitly create the channels required by the topology.
 	//
 
+//RateErrorModel : Determine which packets are errored corresponding to an underlying distribution, rate, and unit.
+// This object is used to flag packets as being lost/errored or not.
+
 	Ptr<RateErrorModel> rem = CreateObject<RateErrorModel>();
 	Ptr<UniformRandomVariable> uv = CreateObject<UniformRandomVariable>();
 	rem->SetRandomVariable(uv);
 	uv->SetStream(50);
+	//把外面的参数代入？
 	rem->SetAttribute("ErrorRate", DoubleValue(error_rate_per_link));
 	rem->SetAttribute("ErrorUnit", StringValue("ERROR_UNIT_PACKET"));
 
@@ -848,7 +871,7 @@ int main(int argc, char *argv[])
 			sw->m_mmu->node_id = sw->GetId();
 		}
 	}
-
+#define ENABLE_QP 1
 	#if ENABLE_QP
 	FILE *fct_output = fopen(fct_output_file.c_str(), "w");
 	//
@@ -884,6 +907,7 @@ int main(int argc, char *argv[])
 			// create and install RdmaDriver
 			Ptr<RdmaDriver> rdma = CreateObject<RdmaDriver>();
 			Ptr<Node> node = n.Get(i);
+			// 这是是互联 ？
 			rdma->SetNode(node);
 			rdma->SetRdmaHw(rdmaHw);
 
@@ -930,7 +954,7 @@ int main(int argc, char *argv[])
 	printf("maxRtt=%lu maxBdp=%lu\n", maxRtt, maxBdp);
 
 	//
-	// setup switch CC
+	// setup switch CC    switch 节点 配置 RTT 和 cc mode
 	//
 	for (uint32_t i = 0; i < node_num; i++){
 		if (n.Get(i)->GetNodeType() == 1){ // switch

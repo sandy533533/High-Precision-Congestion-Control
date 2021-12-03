@@ -33,6 +33,7 @@
 
 using namespace ns3;
 
+//声明了一个叫GENERIC_SIMULATION的日志构件,可以实现打开或者关闭控制台日志的输出。
 NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 
 bool enable_qcn = true, use_dynamic_pfc_threshold = true, packet_level_ecmp = false, flow_level_ecmp = false;
