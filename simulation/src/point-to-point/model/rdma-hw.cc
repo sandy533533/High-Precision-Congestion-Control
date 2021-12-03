@@ -246,7 +246,6 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 	uint32_t nic_idx = GetNicIdxOfQp(qp);
 	//将这个qp 放入对应的nic的qp group
 	m_nic[nic_idx].qpGrp->AddQp(qp);
-	}
 // 用 dip sport 和pg 组成key，写入m_qpMap (总的？)
 	uint64_t key = GetQpKey(dip.Get(), sport, pg);
 	m_qpMap[key] = qp;
@@ -341,7 +340,7 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 	rxQp->m_milestone_rx = m_ack_interval;    //ack 间隔 ，一次n个ack ？ third.cc 配进来的参数
 
 	int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);   // 获得udp的序列号
-	if (x == 1 || x == 2){ //generate ACK or NACK
+	if (x == 1 || x == 2){ //generate ACK or NACK  1：ack 2：NACK
 		qbbHeader seqh;
 		seqh.SetSeq(rxQp->ReceiverNextExpectedSeq);
 		seqh.SetPG(ch.udp.pg);
@@ -433,9 +432,9 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 	if (m_ack_interval == 0)
 		std::cout << "ERROR: shouldn't receive ack\n";
 	else {
-		if (!m_backto0){
+		if (!m_backto0){                                             //{1: go-back-0, 0: go-back-N}
 			qp->Acknowledge(seq);
-		}else {
+		}else {                                                      // go back to 0 !
 			uint32_t goback_seq = seq / m_chunk * m_chunk;
 			qp->Acknowledge(goback_seq);
 		}
@@ -479,26 +478,26 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch){
 	}
 	return 0;
 }
-
+// 判断seq的情况，和生成ack or NACK
 int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size){
 	uint32_t expected = q->ReceiverNextExpectedSeq;   // 根据上一个接收到的q推算的预期的下一个seq
 	if (seq == expected){
 		q->ReceiverNextExpectedSeq = expected + size;    // 如果相同，更新预期nextseq
-		if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx){    // 如果预期的nextseq大于
+		if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx){    // 如果预期的nextseq大于标称的间隔，再加n个间隔
 			q->m_milestone_rx += m_ack_interval;
 			return 1; //Generate ACK
-		}else if (q->ReceiverNextExpectedSeq % m_chunk == 0){
+		}else if (q->ReceiverNextExpectedSeq % m_chunk == 0){     // 如果预期的nextseq小于标称的间隔 &&  预期的nextseq 小于 输入的chunksize（参数代入的）
 			return 1;
 		}else {
-			return 5;
+			return 5;                      //chunksize是seq的max_num ?
 		}
-	} else if (seq > expected) {
+	} else if (seq > expected) {     // 收到的seq > 预期的seq ,中间丢包了！
 		// Generate NACK
 		if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected){
 			q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
 			q->m_lastNACK = expected;
-			if (m_backto0){
-				q->ReceiverNextExpectedSeq = q->ReceiverNextExpectedSeq / m_chunk*m_chunk;
+			if (m_backto0){   // 1: goback 0
+				q->ReceiverNextExpectedSeq = q->ReceiverNextExpectedSeq / m_chunk*m_chunk;   
 			}
 			return 2;
 		}else
