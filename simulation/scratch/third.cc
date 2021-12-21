@@ -128,6 +128,8 @@ uint32_t flow_num;
 
 void ReadFlowInput(){
 	if (flow_input.idx < flow_num){
+		              //14               1                3                100                     5000000                    2
+
 		flowf >> flow_input.src >> flow_input.dst >> flow_input.pg >> flow_input.dport >> flow_input.maxPacketCount >> flow_input.start_time;
 		NS_ASSERT(n.Get(flow_input.src)->GetNodeType() == 0 && n.Get(flow_input.dst)->GetNodeType() == 0);
 	}
@@ -135,7 +137,10 @@ void ReadFlowInput(){
 void ScheduleFlowInputs(){
 	while (flow_input.idx < flow_num && Seconds(flow_input.start_time) == Simulator::Now()){
 		uint32_t port = portNumder[flow_input.src][flow_input.dst]++; // get a new port number 
-		RdmaClientHelper clientHelper(flow_input.pg, serverAddress[flow_input.src], serverAddress[flow_input.dst], port, flow_input.dport, flow_input.maxPacketCount, has_win?(global_t==1?maxBdp:pairBdp[n.Get(flow_input.src)][n.Get(flow_input.dst)]):0, global_t==1?maxRtt:pairRtt[flow_input.src][flow_input.dst]);
+//     RdmaClientHelper::RdmaClientHelper (uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport, uint64_t size, uint32_t win, uint64_t baseRtt)
+
+		RdmaClientHelper clientHelper(flow_input.pg, serverAddress[flow_input.src], serverAddress[flow_input.dst], port, flow_input.dport, flow_input.maxPacketCount, 
+		has_win?(global_t==1?maxBdp:pairBdp[n.Get(flow_input.src)][n.Get(flow_input.dst)]):0, global_t==1?maxRtt:pairRtt[flow_input.src][flow_input.dst]);
 		ApplicationContainer appCon = clientHelper.Install(n.Get(flow_input.src));
 		appCon.Start(Time(0));
 
@@ -871,6 +876,10 @@ int main(int argc, char *argv[])
 			sw->m_mmu->node_id = sw->GetId();
 		}
 	}
+
+
+// RDMA 是应用程序-Application ？？
+//RDMA Server Helper和RDMA Client Helper   ---RdmaClientHelper.cc	
 #define ENABLE_QP 1
 	#if ENABLE_QP
 	FILE *fct_output = fopen(fct_output_file.c_str(), "w");
@@ -997,6 +1006,7 @@ int main(int argc, char *argv[])
 		sim_setting.win = maxBdp;
 		sim_setting.Serialize(trace_output);
 	}
+
 
 	Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
