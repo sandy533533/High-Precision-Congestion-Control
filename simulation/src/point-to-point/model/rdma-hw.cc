@@ -181,13 +181,17 @@ TypeId RdmaHw::GetTypeId (void)
 RdmaHw::RdmaHw(){
 }
 
+//**********************************************************************************
+//主函数 && 基本函数
+//**********************************************************************************
+
+
 // 连接 ，获得外面输入的~~~
 void RdmaHw::SetNode(Ptr<Node> node){
 	m_node = node;
 }
 
-// 这是定义RdmaHw::Setup(QpCompleteCallback cb)这个功能，后面有调用
-//是nic给dev 还是
+// 主函数，被rdma—driver调用，然后调用后面各种功能函数
 void RdmaHw::Setup(QpCompleteCallback cb){
 	for (uint32_t i = 0; i < m_nic.size(); i++){
 		Ptr<QbbNetDevice> dev = m_nic[i].dev;
@@ -207,7 +211,7 @@ void RdmaHw::Setup(QpCompleteCallback cb){
 	// setup qp complete callback
 	m_qpCompleteCallback = cb;
 }
-
+// 基本功能：获得NIC的idx，给各种函数需要NIC info
 uint32_t RdmaHw::GetNicIdxOfQp(Ptr<RdmaQueuePair> qp){
 		// m_rtTable; // map from ip address (u32) to possible ECMP port (index of dev)
 	auto &v = m_rtTable[qp->dip.Get()];
@@ -217,10 +221,11 @@ uint32_t RdmaHw::GetNicIdxOfQp(Ptr<RdmaQueuePair> qp){
 		NS_ASSERT_MSG(false, "We assume at least one NIC is alive");
 	}
 }
-// 用 dip sport 和pg 找QP ？
+// 基本功能：用 dip sport 和pg 找 Qp——key
 uint64_t RdmaHw::GetQpKey(uint32_t dip, uint16_t sport, uint16_t pg){
 	return ((uint64_t)dip << 32) | ((uint64_t)sport << 16) | (uint64_t)pg;
 }
+// 基本功能：用Qp——key找QP
 Ptr<RdmaQueuePair> RdmaHw::GetQp(uint32_t dip, uint16_t sport, uint16_t pg){
 	uint64_t key = GetQpKey(dip, sport, pg);
 	auto it = m_qpMap.find(key);
@@ -229,7 +234,9 @@ Ptr<RdmaQueuePair> RdmaHw::GetQp(uint32_t dip, uint16_t sport, uint16_t pg){
 	return NULL;
 }
 //**********************************************************************************
-//发送方向： AddQueuePair ：用相关信息找到对应的NIC，并将qp放入NIC的qp group和dev(带着rate)，并将这个信息添加入总的qpmap中
+//发送方向添加QP： AddQueuePair ：用相关信息找到对应的NIC，并将qp放入NIC的qp group和dev(带着rate)，并将这个信息添加入总的qpmap中
+//
+// NIC 有两部分 ： dev 和qpGrp ，将新qp加入两种
 //**********************************************************************************
 
 void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Address dip, uint16_t sport, uint16_t dport, uint32_t win, uint64_t baseRtt, Callback<void> notifyAppFinish){
@@ -277,7 +284,7 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 
 //**********************************************************************************
 // DeleteQueuePair ：用相关信息找个对应的key，将qpmap的key释放
-// 收到ack 后？
+// 收到ack 后的操作
 //**********************************************************************************
 
 void RdmaHw::DeleteQueuePair(Ptr<RdmaQueuePair> qp){
@@ -290,7 +297,10 @@ void RdmaHw::DeleteQueuePair(Ptr<RdmaQueuePair> qp){
 //以下是接收端的操作
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// 获得接受的pq的信息
+// 获得接收的pq的信息
+//根据接收的信息，
+// create =1 :
+//给下面的ReceiveUdp用的
 Ptr<RdmaRxQueuePair> RdmaHw::GetRxQp(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport, uint16_t pg, bool create){
 	uint64_t key = ((uint64_t)dip << 32) | ((uint64_t)pg << 16) | (uint64_t)dport;
 	auto it = m_rxQpMap.find(key);
@@ -311,7 +321,9 @@ Ptr<RdmaRxQueuePair> RdmaHw::GetRxQp(uint32_t sip, uint32_t dip, uint16_t sport,
 	}
 	return NULL;
 }
+// 给下面的ReceiveUdp用
 uint32_t RdmaHw::GetNicIdxOfRxQp(Ptr<RdmaRxQueuePair> q){
+	//m_rtTable: map from ip address (u32) to possible ECMP port (index of dev)
 	auto &v = m_rtTable[q->dip];
 	if (v.size() > 0){
 		return v[q->GetHash() % v.size()];
@@ -324,6 +336,9 @@ void RdmaHw::DeleteRxQp(uint32_t dip, uint16_t pg, uint16_t dport){
 	m_rxQpMap.erase(key);
 }
 
+
+
+//接收端接收UDP主功能函数
 int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 	uint8_t ecnbits = ch.GetIpv4EcnBits();
 
@@ -340,33 +355,36 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch){
 	rxQp->m_milestone_rx = m_ack_interval;    //ack 间隔 ，一次n个ack ？ third.cc 配进来的参数
 
 	int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);   // 获得udp的序列号
+	// 根据接收的seq判断和预期的区别，确定是给ack or NACK
 	if (x == 1 || x == 2){ //generate ACK or NACK  1：ack 2：NACK
 		qbbHeader seqh;
-		seqh.SetSeq(rxQp->ReceiverNextExpectedSeq);
+		seqh.SetSeq(rxQp->ReceiverNextExpectedSeq); //将希望得到的seq发给发送方
 		seqh.SetPG(ch.udp.pg);
-		seqh.SetSport(ch.udp.dport);
+		seqh.SetSport(ch.udp.dport);  // 将接收报文的dport和sport换一下，发送给发送方
 		seqh.SetDport(ch.udp.sport);
 		seqh.SetIntHeader(ch.udp.ih);
 		if (ecnbits)
 			seqh.SetCnp();
-
+// 创造一个叫newp的Packet的ptr
 		Ptr<Packet> newp = Create<Packet>(std::max(60-14-20-(int)seqh.GetSerializedSize(), 0));
+		
 		newp->AddHeader(seqh);
 
 		Ipv4Header head;	// Prepare IPv4 header
 		head.SetDestination(Ipv4Address(ch.sip));
 		head.SetSource(Ipv4Address(ch.dip));
-		head.SetProtocol(x == 1 ? 0xFC : 0xFD); //ack=0xFC nack=0xFD
+		head.SetProtocol(x == 1 ? 0xFC : 0xFD); //ack=0xFC nack=0xFD    // ACK和NACK的区别
 		head.SetTtl(64);
 		head.SetPayloadSize(newp->GetSize());
 		head.SetIdentification(rxQp->m_ipid++);
 
 		newp->AddHeader(head);
 		AddHeader(newp, 0x800);	// Attach PPP header
-		// send
+		// send   
+		// ！！！！！！！！！！！！！！！！！！！！！！！！！send
 		uint32_t nic_idx = GetNicIdxOfRxQp(rxQp);
 		m_nic[nic_idx].dev->RdmaEnqueueHighPrioQ(newp);
-		m_nic[nic_idx].dev->TriggerTransmit();
+		m_nic[nic_idx].dev->TriggerTransmit();   
 	}
 	return 0;
 }
@@ -438,7 +456,7 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch){
 			uint32_t goback_seq = seq / m_chunk * m_chunk;
 			qp->Acknowledge(goback_seq);
 		}
-		if (qp->IsFinished()){
+		if (qp->IsFinished()){     //如果qp的snd_una >= m_size;
 			QpComplete(qp);
 		}
 	}
@@ -623,7 +641,7 @@ void RdmaHw::UpdateNextAvail(Ptr<RdmaQueuePair> qp, Time interframeGap, uint32_t
 		sendingTime = interframeGap + Seconds(qp->m_rate.CalculateTxTime(pkt_size));
 	else
 		sendingTime = interframeGap + Seconds(qp->m_max_rate.CalculateTxTime(pkt_size));
-	qp->m_nextAvail = Simulator::Now() + sendingTime;
+	qp->m_nextAvail = Simulator::Now() + sendingTime;            // 真正的发东西了！！！
 }
 
 void RdmaHw::ChangeRate(Ptr<RdmaQueuePair> qp, DataRate new_rate){
@@ -961,7 +979,7 @@ void RdmaHw::HandleAckTimely(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader 
 void RdmaHw::UpdateRateTimely(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &ch, bool us){
 	uint32_t next_seq = qp->snd_nxt;
 	uint64_t rtt = Simulator::Now().GetTimeStep() - ch.ack.ih.ts;
-	bool print = !us;
+	bool print = !us;   // us =0
 	if (qp->tmly.m_lastUpdateSeq != 0){ // not first RTT
 		int64_t new_rtt_diff = (int64_t)rtt - (int64_t)qp->tmly.lastRtt;
 		double rtt_diff = (1 - m_tmly_alpha) * qp->tmly.rttDiff + m_tmly_alpha * new_rtt_diff;
